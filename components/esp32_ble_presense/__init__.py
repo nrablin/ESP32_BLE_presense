@@ -26,10 +26,6 @@ CONFIG_SCHEMA = cv.Schema({
 }).extend(cv.COMPONENT_SCHEMA)
 
 async def to_code(config):
-    cg.add_library(
-        name="NimBLE-Arduino",
-        version="1.4.2",
-    )
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
 
