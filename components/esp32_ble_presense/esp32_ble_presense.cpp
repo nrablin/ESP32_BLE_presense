@@ -6,10 +6,13 @@
 
 #include "esphome/core/log.h"
 
-#include <NimBLEDevice.h>
+#include "esp_bt.h"
+#include "esp_gap_ble_api.h"
+#include "esp_bt_main.h"
+#include "esp_bt_defs.h"
 
-#define bleScanInterval 0x80 // Used to determine antenna sharing between Bluetooth and WiFi. Do not modify unless you are confident you know what you're doing
-#define bleScanWindow 0x40 // Used to determine antenna sharing between Bluetooth and WiFi. Do not modify unless you are confident you know what you're doing
+#define bleScanInterval 0x80 // Adjusted for ESP-IDF
+#define bleScanWindow 0x40    // Adjusted for ESP-IDF
 
 // Undo the default loose definitions in our file only
 #pragma GCC diagnostic error "-Wdeprecated-declarations"
@@ -24,22 +27,21 @@ using namespace esphome;
 
 namespace ESP32_BLE_Presense {
 
-NimBLEScan* pBLEScan;
+static esp_ble_scan_params_t ble_scan_params;
 
-class BleAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
+class BleAdvertisedDeviceCallbacks {
 
     ESP32_BLE_Presense& parent_;
 
 public:
     BleAdvertisedDeviceCallbacks(ESP32_BLE_Presense& parent) : parent_(parent) {}
 
-    void onResult(NimBLEAdvertisedDevice* device) {
-        if (!device)
+    void onResult(esp_ble_gap_cb_param_t::ble_scan_result_evt_param *scan_result) {
+        if (!scan_result)
             return;
 
-        parent_.reportDevice(device->getAddress().toString(),
-                             device->getRSSI(),
-                             device->getManufacturerData());
+        std::string mac_address = esp_ble_gap_get_static_rnd_addr(scan_result->bda);
+        parent_.reportDevice(mac_address, scan_result->rssi, std::string((char*)scan_result->ble_adv, scan_result->adv_data_len));
     }
 };
 
@@ -57,9 +59,8 @@ ESP32_BLE_Presense::ESP32_BLE_Presense()
 }
 
 void ESP32_BLE_Presense::update() {
-    if (!pBLEScan->isScanning()) {
+    if (!esp_ble_gap_start_scanning(0)) {
         ESP_LOGD("format_ble", "Start scanning...");
-        pBLEScan->start(0, nullptr, false);
     }
     ESP_LOGD("format_ble", "BLE scan heartbeat");
 }
@@ -67,14 +68,26 @@ void ESP32_BLE_Presense::update() {
 void ESP32_BLE_Presense::setup() {
     PollingComponent::setup();
 
-    NimBLEDevice::init("");
-    NimBLEDevice::setPower(ESP_PWR_LVL_P9);
-    pBLEScan = NimBLEDevice::getScan();
-    pBLEScan->setAdvertisedDeviceCallbacks(new BleAdvertisedDeviceCallbacks(*this), true);
-    pBLEScan->setInterval(bleScanInterval);
-    pBLEScan->setWindow(bleScanWindow);
-    pBLEScan->setActiveScan(false);
-    pBLEScan->setMaxResults(0);
+    esp_err_t ret = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+    ret = esp_bt_controller_init(&bt_cfg);
+    ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
+
+    esp_bluedroid_init();
+    esp_bluedroid_enable();
+
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_P9);
+
+    ble_scan_params.scan_type = BLE_SCAN_TYPE_ACTIVE;
+    ble_scan_params.own_addr_type = BLE_ADDR_TYPE_PUBLIC;
+    ble_scan_params.scan_filter_policy = BLE_SCAN_FILTER_ALLOW_ALL;
+    ble_scan_params.scan_interval = bleScanInterval;
+    ble_scan_params.scan_window = bleScanWindow;
+    ble_scan_params.scan_duplicate = BLE_SCAN_DUPLICATE_DISABLE;
+
+    esp_ble_gap_set_scan_params(&ble_scan_params);
+    esp_ble_gap_register_callback(esp_gap_cb);
+
     subscribe("format_ble_tracker/alive/+", &ESP32_BLE_Presense::on_alive_message);
 }
 
@@ -108,7 +121,6 @@ void ESP32_BLE_Presense::reportDevice(const std::string& macAddress,
         }
     }
 }
-
 
 void ESP32_BLE_Presense::on_alive_message(const std::string &topic, const std::string &payload) {
     std::string uid = capitalizeString(topic.substr(topic.find_last_of("/") + 1));
